@@ -1,11 +1,26 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import type { Request, Response, NextFunction } from "express";
-import type { UserSafe } from "@shared/schema";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "siteforgeai-jwt-secret-key";
 const JWT_EXPIRES_IN = "7d";
 const SALT_ROUNDS = 10;
+
+export interface UserSafe {
+  id: string;
+  email: string;
+  name: string;
+  role: "ADMIN" | "CLIENT";
+  avatarUrl: string | null;
+  aiGenerationsUsed: number;
+  aiGenerationsLimit: number;
+  planType: "free" | "pro" | "enterprise";
+  subscriptionStatus: "free" | "active" | "past_due" | "cancelled";
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  subscriptionEndDate: Date | null;
+  createdAt: Date;
+}
 
 export interface AuthRequest extends Request {
   user?: UserSafe;
@@ -59,6 +74,13 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
     role: decoded.role as "ADMIN" | "CLIENT",
     name: "",
     avatarUrl: null,
+    aiGenerationsUsed: 0,
+    aiGenerationsLimit: 3,
+    planType: "free",
+    subscriptionStatus: "free",
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    subscriptionEndDate: null,
     createdAt: new Date(),
   };
 
@@ -72,7 +94,7 @@ export function adminMiddleware(req: AuthRequest, res: Response, next: NextFunct
   next();
 }
 
-export function stripPassword(user: { password: string; [key: string]: any }): UserSafe {
+export function stripPassword(user: any): UserSafe {
   const { password, ...userSafe } = user;
   return userSafe as UserSafe;
 }
