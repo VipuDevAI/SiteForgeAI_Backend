@@ -38,6 +38,10 @@ export const projects = pgTable("projects", {
   status: projectStatusEnum("status").default("draft").notNull(),
   domain: text("domain"),
   thumbnail: text("thumbnail"),
+  generatedHtml: text("generated_html"),
+  generatedCss: text("generated_css"),
+  businessType: text("business_type"),
+  primaryColor: text("primary_color"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

@@ -12,6 +12,21 @@ import {
 } from "./auth";
 import { signupSchema, loginSchema, insertProjectSchema, aiGenerateSchema } from "@shared/schema";
 import { z } from "zod";
+import { generateWebsite, regenerateSection } from "./openai-website";
+
+const websiteGenerateSchema = z.object({
+  businessName: z.string().min(2, "Business name is required"),
+  businessType: z.string().min(2, "Business type is required"),
+  description: z.string().min(10, "Description must be at least 10 characters"),
+  primaryColor: z.string().optional(),
+  sections: z.array(z.string()).optional(),
+});
+
+const websiteRegenerateSchema = z.object({
+  projectId: z.string(),
+  sectionName: z.string(),
+  instructions: z.string().min(5, "Instructions are required"),
+});
 
 export async function registerRoutes(
   httpServer: Server,
@@ -361,6 +376,175 @@ export async function registerRoutes(
       }
       console.error("AI generation error:", error);
       res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/website/generate", authMiddleware, async (req: AuthRequest, res) => {
+    try {
+      const validatedData = websiteGenerateSchema.parse(req.body);
+      
+      const subscription = await storage.getSubscriptionStatus(req.user!.id);
+      
+      if (subscription.isBlocked) {
+        return res.status(402).json({
+          message: "Your subscription requires payment. Please upgrade to continue.",
+          requiresPayment: true,
+        });
+      }
+
+      if (!subscription.canUseAi) {
+        return res.status(403).json({ 
+          message: "AI generation limit reached. Upgrade your plan for unlimited generations.",
+          requiresUpgrade: true,
+        });
+      }
+
+      console.log("Generating website for:", validatedData.businessName);
+      
+      const generated = await generateWebsite({
+        businessName: validatedData.businessName,
+        businessType: validatedData.businessType,
+        description: validatedData.description,
+        primaryColor: validatedData.primaryColor,
+        sections: validatedData.sections,
+      });
+
+      const project = await storage.createProject({
+        name: validatedData.businessName,
+        description: validatedData.description,
+        userId: req.user!.id,
+        templateId: null,
+        status: "draft",
+        generatedHtml: generated.html,
+        generatedCss: generated.css,
+        businessType: validatedData.businessType,
+        primaryColor: validatedData.primaryColor,
+      });
+
+      await storage.incrementAiUsage(req.user!.id);
+      await storage.logAiGeneration(
+        req.user!.id, 
+        `Website: ${validatedData.businessName} - ${validatedData.businessType}`, 
+        "Website generated successfully",
+        2000
+      );
+      
+      res.status(201).json({ 
+        project,
+        message: "Website generated successfully!",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
+      }
+      console.error("Website generation error:", error);
+      res.status(500).json({ message: error instanceof Error ? error.message : "Failed to generate website" });
+    }
+  });
+
+  app.post("/api/website/regenerate", authMiddleware, async (req: AuthRequest, res) => {
+    try {
+      const validatedData = websiteRegenerateSchema.parse(req.body);
+      
+      const project = await storage.getProject(validatedData.projectId);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      if (project.userId !== req.user!.id) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      if (!project.generatedHtml || !project.generatedCss) {
+        return res.status(400).json({ message: "Project has no generated website" });
+      }
+
+      const subscription = await storage.getSubscriptionStatus(req.user!.id);
+      if (!subscription.canUseAi) {
+        return res.status(403).json({ 
+          message: "AI generation limit reached. Upgrade for more.",
+          requiresUpgrade: true,
+        });
+      }
+
+      const regenerated = await regenerateSection(
+        project.generatedHtml,
+        project.generatedCss,
+        validatedData.sectionName,
+        validatedData.instructions
+      );
+
+      const updated = await storage.updateProject(validatedData.projectId, {
+        generatedHtml: regenerated.html,
+        generatedCss: regenerated.css,
+      });
+
+      await storage.incrementAiUsage(req.user!.id);
+      
+      res.json({ 
+        project: updated,
+        message: "Section regenerated successfully!",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
+      }
+      console.error("Regeneration error:", error);
+      res.status(500).json({ message: error instanceof Error ? error.message : "Failed to regenerate section" });
+    }
+  });
+
+  app.get("/api/website/:id/preview", authMiddleware, async (req: AuthRequest, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      if (project.userId !== req.user!.id && req.user!.role !== "ADMIN") {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      if (!project.generatedHtml) {
+        return res.status(400).json({ message: "No website generated for this project" });
+      }
+
+      let html = project.generatedHtml;
+      if (project.generatedCss && !html.includes("<style>")) {
+        html = html.replace("</head>", `<style>${project.generatedCss}</style></head>`);
+      }
+
+      res.setHeader("Content-Type", "text/html");
+      res.send(html);
+    } catch (error) {
+      console.error("Preview error:", error);
+      res.status(500).json({ message: "Failed to load preview" });
+    }
+  });
+
+  app.get("/api/website/:id/download", authMiddleware, async (req: AuthRequest, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      if (project.userId !== req.user!.id && req.user!.role !== "ADMIN") {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      if (!project.generatedHtml) {
+        return res.status(400).json({ message: "No website generated for this project" });
+      }
+
+      let html = project.generatedHtml;
+      if (project.generatedCss && !html.includes("<style>")) {
+        html = html.replace("</head>", `<style>${project.generatedCss}</style></head>`);
+      }
+
+      res.setHeader("Content-Type", "text/html");
+      res.setHeader("Content-Disposition", `attachment; filename="${project.name.replace(/[^a-z0-9]/gi, '_')}.html"`);
+      res.send(html);
+    } catch (error) {
+      console.error("Download error:", error);
+      res.status(500).json({ message: "Failed to download website" });
     }
   });
 
